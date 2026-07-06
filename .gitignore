@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+results.json
+
+# internal handoff - never commit to public repo
+HANDOFF.md
