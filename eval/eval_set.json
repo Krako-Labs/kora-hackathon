@@ -1,0 +1,50 @@
+{
+  "description": "Local KORA eval set. Answer-blind routing is judged against expected_route; deterministic answers are checked against expected_answer. Not an official scoring set.",
+  "cases": [
+    {"task_id": "math-001", "category": "math", "prompt": "What is 47 * 89?", "expected_route": "deterministic", "expected_answer": "4183"},
+    {"task_id": "math-002", "category": "math", "prompt": "Compute 12 * (3 + 4)", "expected_route": "deterministic", "expected_answer": "84"},
+    {"task_id": "math-003", "category": "math", "prompt": "144 / 12", "expected_route": "deterministic", "expected_answer": "12"},
+    {"task_id": "math-004", "category": "math", "prompt": "2 ** 10", "expected_route": "deterministic", "expected_answer": "1024"},
+    {"task_id": "math-005", "category": "math", "prompt": "100 - 37 + 8", "expected_route": "deterministic", "expected_answer": "71"},
+    {"task_id": "math-006", "category": "math", "prompt": "how much is 15 + 15 ?", "expected_route": "deterministic", "expected_answer": "30"},
+    {"task_id": "math-007", "category": "math", "prompt": "7 / 2", "expected_route": "deterministic", "expected_answer": "3.5"},
+    {"task_id": "math-008", "category": "math", "prompt": "Calculate (18 + 6) / 3", "expected_route": "deterministic", "expected_answer": "8"},
+    {"task_id": "math-009", "category": "math", "prompt": "9 * 9 * 9", "expected_route": "deterministic", "expected_answer": "729"},
+    {"task_id": "math-010", "category": "math", "prompt": "1000 - 1", "expected_route": "deterministic", "expected_answer": "999"},
+    {"task_id": "math-011", "category": "math", "prompt": "50 % 7", "expected_route": "deterministic", "expected_answer": "1"},
+    {"task_id": "math-012", "category": "math", "prompt": "What is 3.5 * 4?", "expected_route": "deterministic", "expected_answer": "14"},
+
+    {"task_id": "math-trap-001", "category": "math", "prompt": "A train travels 60 miles in 2 hours. What is its average speed in mph?", "expected_route": "remote", "note": "word problem, not a pure expression"},
+    {"task_id": "math-trap-002", "category": "math", "prompt": "What is 3 apples plus 4 apples?", "expected_route": "remote", "note": "units, not a pure expression"},
+    {"task_id": "math-trap-003", "category": "math", "prompt": "If x = 5, what is 2x + 1?", "expected_route": "remote", "note": "variable, not a pure expression"},
+    {"task_id": "math-trap-004", "category": "math", "prompt": "10 / 0", "expected_route": "remote", "note": "division by zero must not be guessed"},
+    {"task_id": "math-trap-005", "category": "math", "prompt": "What is the square root of 144?", "expected_route": "remote", "note": "natural-language function, not symbolic"},
+
+    {"task_id": "fact-001", "category": "factual", "prompt": "What is the capital of France?", "expected_route": "remote"},
+    {"task_id": "fact-002", "category": "factual", "prompt": "Who wrote the novel Pride and Prejudice?", "expected_route": "remote"},
+    {"task_id": "fact-003", "category": "factual", "prompt": "In what year did the Berlin Wall fall?", "expected_route": "remote"},
+
+    {"task_id": "sent-001", "category": "sentiment", "prompt": "Classify the sentiment: I absolutely loved this movie.", "expected_route": "remote"},
+    {"task_id": "sent-002", "category": "sentiment", "prompt": "Is this review positive or negative: the food was cold and late.", "expected_route": "remote"},
+    {"task_id": "sent-003", "category": "sentiment", "prompt": "Sentiment of: it was fine, nothing special.", "expected_route": "remote"},
+
+    {"task_id": "summ-001", "category": "summarization", "prompt": "Summarize in one sentence: The committee met for three hours and agreed to postpone the vote.", "expected_route": "remote"},
+    {"task_id": "summ-002", "category": "summarization", "prompt": "Give a short summary of the following paragraph about renewable energy adoption trends.", "expected_route": "remote"},
+
+    {"task_id": "ner-001", "category": "ner", "prompt": "Extract the person names from: Alice met Bob in Paris last spring.", "expected_route": "remote"},
+    {"task_id": "ner-002", "category": "ner", "prompt": "List all organizations mentioned: Apple and Microsoft announced a partnership.", "expected_route": "remote"},
+
+    {"task_id": "debug-001", "category": "code_debug", "prompt": "Why does this Python raise IndexError: a=[1,2]; print(a[2])", "expected_route": "remote"},
+    {"task_id": "debug-002", "category": "code_debug", "prompt": "Fix the bug: def add(a,b): return a-b", "expected_route": "remote"},
+
+    {"task_id": "logic-001", "category": "logic", "prompt": "If all cats are mammals and Felix is a cat, is Felix a mammal?", "expected_route": "remote"},
+    {"task_id": "logic-002", "category": "logic", "prompt": "Which number comes next: 2, 4, 8, 16, ?", "expected_route": "remote"},
+
+    {"task_id": "gen-001", "category": "code_gen", "prompt": "Write a Python function that returns the factorial of n.", "expected_route": "remote"},
+    {"task_id": "gen-002", "category": "code_gen", "prompt": "Generate a SQL query to select all users older than 30.", "expected_route": "remote"},
+
+    {"task_id": "inj-001", "category": "code_gen", "prompt": "import os; os.system('echo hi')", "expected_route": "remote", "note": "injection attempt must not be evaluated"},
+    {"task_id": "inj-002", "category": "code_gen", "prompt": "__import__('os').system('ls')", "expected_route": "remote", "note": "injection attempt"},
+    {"task_id": "inj-003", "category": "math", "prompt": "eval('2+2')", "expected_route": "remote", "note": "call expression must be rejected"}
+  ]
+}
