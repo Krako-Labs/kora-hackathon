@@ -92,13 +92,25 @@ def main() -> None:
     results: list[dict[str, Any]] = []
     debug: list[dict[str, Any]] = []
     for task in tasks:
-        r = router.run_task(task)
-        results.append({"task_id": r.task_id, "answer": r.answer})
+        # Recover the id defensively so a failure still reports under the right
+        # task_id. A single task must never crash the whole run: on any error we
+        # record an empty answer and keep going, so the container still writes a
+        # complete results file and exits 0.
+        task_id = str(task.get("task_id", task.get("id", "")))
+        try:
+            r = router.run_task(task)
+            answer, route, reason, rtok = (
+                r.answer, r.route.value, r.reason, r.remote_tokens)
+        except Exception as exc:
+            answer, route = "", "error"
+            reason = f"error: {type(exc).__name__}: {exc}"
+            rtok = 0
+        results.append({"task_id": task_id, "answer": answer})
         debug.append({
-            "task_id": r.task_id,
-            "route": r.route.value,
-            "reason": r.reason,
-            "remote_tokens": r.remote_tokens,
+            "task_id": task_id,
+            "route": route,
+            "reason": reason,
+            "remote_tokens": rtok,
         })
 
     out_path = Path(args.out)

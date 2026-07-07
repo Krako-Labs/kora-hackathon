@@ -5,3 +5,6 @@ results.json
 
 # internal handoff - never commit to public repo
 HANDOFF.md
+
+# Local-only dev utilities (key loading, remote validation). Not for scoring.
+scripts/

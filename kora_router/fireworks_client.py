@@ -56,11 +56,16 @@ class FireworksClient:
     """Thin wrapper over the OpenAI-compatible Fireworks chat endpoint."""
 
     def __init__(self, model: str, api_key: str | None = None,
-                 base_url: str | None = None) -> None:
+                 base_url: str | None = None,
+                 timeout: float | None = None) -> None:
         self._model = model
         self._api_key = api_key or os.getenv("FIREWORKS_API_KEY")
         self._base_url = (base_url or os.getenv("FIREWORKS_BASE_URL")
                           or DEFAULT_BASE_URL)
+        # Per-call ceiling so one hung request cannot consume the total time
+        # budget. Kept just under the per-request limit; overridable via env.
+        self._timeout = (timeout if timeout is not None
+                         else float(os.getenv("KORA_REMOTE_TIMEOUT", "25")))
         self._client = None
         self.usage = RemoteUsage()
 
@@ -85,6 +90,7 @@ class FireworksClient:
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=self._timeout,
         )
         usage = resp.usage
         prompt = getattr(usage, "prompt_tokens", 0) or 0
