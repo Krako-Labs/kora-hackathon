@@ -1,7 +1,7 @@
 """KORA routing core for the token-efficient agent.
 
-Given a task, the router decides, before any remote inference, how each unit
-of work should be handled:
+Given a task, the router decides, before any remote inference, how each unit of
+work should be handled:
 
   DETERMINISTIC : answered by a rule / lookup / computation, no model at all.
   LOCAL         : handled by the small local model (free under scoring).
@@ -9,14 +9,14 @@ of work should be handled:
 
 This mirrors KORA's front-door philosophy: the cheapest correct path wins, and
 the remote model is used only when nothing cheaper can produce a confident,
-accurate answer. The per-task decision logic is attached on launch day once the
-tasks are known; this module fixes the decision types, the routing contract,
-and the accounting so that logic plugs in without reshaping the pipeline.
+accurate answer. The per-task decision logic is attached in main; this module
+fixes the decision types, the routing contract, and the accounting so that
+logic plugs in without reshaping the pipeline.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
@@ -52,8 +52,7 @@ class TaskResult:
         return self.remote_prompt_tokens + self.remote_completion_tokens
 
 
-# A decision function inspects a task and returns how to route it. The concrete
-# implementation is task-specific and supplied on launch day. It must be
+# A decision function inspects a task and returns how to route it. It must be
 # answer-blind in the same spirit as the benchmark dispatcher: it decides on the
 # request, not on a peeked ground truth.
 DecisionFn = Callable[[dict[str, Any]], RouteDecision]
@@ -67,7 +66,7 @@ class Router:
         self._remote = remote
 
     def run_task(self, task: dict[str, Any]) -> TaskResult:
-        task_id = str(task.get("id", ""))
+        task_id = str(task.get("task_id", task.get("id", "")))
         decision = self._decide(task)
 
         if decision.route is Route.DETERMINISTIC:
@@ -102,11 +101,7 @@ class Router:
 
 
 def _to_messages(task: dict[str, Any]) -> list[dict]:
-    """Adapt a task dict into chat messages.
-
-    Kept minimal and task-agnostic; refined on launch day once the task schema
-    is published.
-    """
+    """Adapt a task dict into chat messages. Minimal and task-agnostic."""
     system = task.get("system")
     user = task.get("prompt") or task.get("text") or ""
     messages: list[dict] = []

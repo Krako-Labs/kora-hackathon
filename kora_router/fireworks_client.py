@@ -1,19 +1,29 @@
 """Remote model client for the Fireworks AI inference API.
 
 Fireworks exposes an OpenAI-compatible endpoint, so the standard `openai`
-client works by pointing `base_url` at the Fireworks inference host. Every
-call records prompt/completion token usage, which the routing layer uses to
-account for remote spend (local tokens are free under the challenge scoring).
+client works by pointing `base_url` at the Fireworks inference host. Every call
+records prompt/completion token usage, which the routing layer uses to account
+for remote spend (local tokens are free under the challenge scoring).
+
+The base URL and API key are read from the environment the scoring harness
+injects (FIREWORKS_BASE_URL, FIREWORKS_API_KEY), so every remote call goes
+through the provided endpoint rather than a hardcoded host. The client is
+created lazily on first use, so a task set that is fully resolved without any
+remote call runs even when no credentials are present.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from openai import OpenAI
+try:  # openai is only needed when a remote call actually happens
+    from openai import OpenAI
+except ImportError:  # pragma: no cover - exercised only without the dep
+    OpenAI = None  # type: ignore[assignment]
 
-FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+# Fallback only. The harness injects FIREWORKS_BASE_URL; that value wins.
+DEFAULT_BASE_URL = "https://api.fireworks.ai/inference/v1"
 
 
 @dataclass
@@ -46,18 +56,32 @@ class FireworksClient:
     """Thin wrapper over the OpenAI-compatible Fireworks chat endpoint."""
 
     def __init__(self, model: str, api_key: str | None = None,
-                 base_url: str = FIREWORKS_BASE_URL) -> None:
-        key = api_key or os.getenv("FIREWORKS_API_KEY")
-        if not key:
-            raise RuntimeError("FIREWORKS_API_KEY is not set")
-        self._client = OpenAI(base_url=base_url, api_key=key)
-        self.model = model
+                 base_url: str | None = None) -> None:
+        self._model = model
+        self._api_key = api_key or os.getenv("FIREWORKS_API_KEY")
+        self._base_url = (base_url or os.getenv("FIREWORKS_BASE_URL")
+                          or DEFAULT_BASE_URL)
+        self._client = None
         self.usage = RemoteUsage()
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def _ensure_client(self):
+        if self._client is None:
+            if OpenAI is None:
+                raise RuntimeError("openai package is not installed")
+            if not self._api_key:
+                raise RuntimeError("FIREWORKS_API_KEY is not set")
+            self._client = OpenAI(base_url=self._base_url, api_key=self._api_key)
+        return self._client
 
     def chat(self, messages: list[dict], *, temperature: float = 0.0,
              max_tokens: int = 512) -> RemoteResult:
-        resp = self._client.chat.completions.create(
-            model=self.model,
+        client = self._ensure_client()
+        resp = client.chat.completions.create(
+            model=self._model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -70,5 +94,5 @@ class FireworksClient:
             text=resp.choices[0].message.content or "",
             prompt_tokens=prompt,
             completion_tokens=completion,
-            model=self.model,
+            model=self._model,
         )

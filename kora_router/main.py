@@ -1,11 +1,14 @@
 """Entry point for running the KORA routing agent over a task set.
 
-Usage (finalized on launch day once the task I/O format is published):
+Scoring-harness contract:
 
-    python -m kora_router.main --tasks tasks.json --out results.json
+    input  : /input/tasks.json   -> [{"task_id": ..., "prompt": ...}, ...]
+    output : /output/results.json -> [{"task_id": ..., "answer": ...}, ...]
 
-For now this wires the pipeline end-to-end with a placeholder decision function
-so the container is runnable and testable before the tasks are released.
+The container runs with no arguments and uses those default paths. Both can be
+overridden for local testing. Routing decisions and token accounting are
+written to stdout and, optionally, to a debug sidecar; the scored results file
+stays a clean array of {task_id, answer}.
 """
 
 from __future__ import annotations
@@ -16,20 +19,31 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .deterministic import try_deterministic
 from .fireworks_client import FireworksClient
 from .local_model import LocalModel
 from .router import Route, RouteDecision, Router
 
+DEFAULT_TASKS = "/input/tasks.json"
+DEFAULT_OUT = "/output/results.json"
+
 
 def default_decision(task: dict[str, Any]) -> RouteDecision:
-    """Placeholder routing policy.
+    """KORA front-door policy.
 
-    Replaced on launch day with the real KORA decision logic (deterministic
-    rules first, local model for cheap-but-non-trivial work, remote only when
-    nothing cheaper is confident). Until then, everything escalates to remote so
-    the pipeline produces answers end-to-end.
+    Deterministic rules first: if a rule can resolve the task with a
+    provably-correct answer and no model, take it (zero tokens). Otherwise
+    escalate to the remote model. Local routing is intentionally not used until
+    a real local backend is served; routing to the placeholder backend would
+    emit empty answers and fail the accuracy gate.
     """
-    return RouteDecision(route=Route.REMOTE, reason="placeholder: escalate all")
+    resolved = try_deterministic(task)
+    if resolved is not None:
+        answer, reason = resolved
+        return RouteDecision(route=Route.DETERMINISTIC, reason=reason,
+                             answer=answer)
+    return RouteDecision(route=Route.REMOTE,
+                         reason="escalate: no confident deterministic resolution")
 
 
 def load_tasks(path: Path) -> list[dict[str, Any]]:
@@ -41,50 +55,84 @@ def load_tasks(path: Path) -> list[dict[str, Any]]:
     raise ValueError("unrecognized task file shape")
 
 
+def select_model(explicit: str) -> str:
+    """Pick the remote model from ALLOWED_MODELS.
+
+    Uses the explicit override when it is allowed (or when no allow-list is
+    given); otherwise falls back to the first allowed model. The allow-list is
+    controlled by the harness, so no model id is hardcoded.
+    """
+    allowed = [m.strip() for m in os.getenv("ALLOWED_MODELS", "").split(",")
+               if m.strip()]
+    if explicit and (not allowed or explicit in allowed):
+        return explicit
+    if allowed:
+        return allowed[0]
+    if explicit:
+        return explicit
+    return ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tasks", required=True, help="path to task JSON")
-    ap.add_argument("--out", default="results.json")
-    ap.add_argument("--remote-model",
-                    default=os.getenv("REMOTE_MODEL", ""),
-                    help="Fireworks model id (accounts/fireworks/models/...)")
+    ap.add_argument("--tasks", default=DEFAULT_TASKS, help="path to task JSON")
+    ap.add_argument("--out", default=DEFAULT_OUT, help="path to results JSON")
+    ap.add_argument("--remote-model", default=os.getenv("REMOTE_MODEL", ""),
+                    help="Fireworks model id; must be in ALLOWED_MODELS")
+    ap.add_argument("--debug-out", default=os.getenv("KORA_DEBUG_OUT", ""),
+                    help="optional path for per-task routing diagnostics")
     args = ap.parse_args()
 
     tasks = load_tasks(Path(args.tasks))
+    model = select_model(args.remote_model)
     local = LocalModel()
-    remote = FireworksClient(model=args.remote_model)
+    remote = FireworksClient(model=model)
     router = Router(decide=default_decision, local=local, remote=remote)
 
-    results = []
+    results: list[dict[str, Any]] = []
+    debug: list[dict[str, Any]] = []
     for task in tasks:
         r = router.run_task(task)
-        results.append({
-            "id": r.task_id,
-            "answer": r.answer,
+        results.append({"task_id": r.task_id, "answer": r.answer})
+        debug.append({
+            "task_id": r.task_id,
             "route": r.route.value,
             "reason": r.reason,
             "remote_tokens": r.remote_tokens,
         })
 
-    total_remote = sum(r["remote_tokens"] for r in results)
-    payload = {
-        "results": results,
-        "summary": {
-            "n_tasks": len(results),
-            "total_remote_tokens": total_remote,
-            "remote_calls": remote.usage.calls,
-            "route_counts": _route_counts(results),
-        },
-    }
-    Path(args.out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"wrote {args.out}: {len(results)} tasks, "
-          f"{total_remote} remote tokens, {remote.usage.calls} remote calls")
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+
+    total_remote = sum(d["remote_tokens"] for d in debug)
+    route_counts = _route_counts(debug)
+    if args.debug_out:
+        dbg_path = Path(args.debug_out)
+        dbg_path.parent.mkdir(parents=True, exist_ok=True)
+        dbg_path.write_text(
+            json.dumps({
+                "summary": {
+                    "n_tasks": len(results),
+                    "total_remote_tokens": total_remote,
+                    "remote_calls": remote.usage.calls,
+                    "route_counts": route_counts,
+                },
+                "tasks": debug,
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    print(f"wrote {out_path}: {len(results)} tasks, "
+          f"{total_remote} remote tokens, {remote.usage.calls} remote calls, "
+          f"routes={route_counts}")
 
 
-def _route_counts(results: list[dict]) -> dict[str, int]:
+def _route_counts(debug: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for r in results:
-        counts[r["route"]] = counts.get(r["route"], 0) + 1
+    for d in debug:
+        counts[d["route"]] = counts.get(d["route"], 0) + 1
     return counts
 
 
