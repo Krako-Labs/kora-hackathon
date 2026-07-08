@@ -23,6 +23,26 @@ from typing import Any, Callable
 from .fireworks_client import FireworksClient
 from .local_model import LocalModel
 
+# Default system prompt used when a task does not carry its own. The remote
+# judge scores answers against expected intent, so the model must respond with
+# a clean, direct answer and no decorative formatting. These are general output
+# hygiene rules keyed to the published task categories, not per-dataset tuning:
+# the router stays answer-blind and applies the same guidance to every task.
+_DEFAULT_SYSTEM = (
+    "You are a precise task-solving assistant. Follow these rules for every "
+    "answer:\n"
+    "- Give only the answer. No preamble, no explanation, and do not restate "
+    "the question, unless the task explicitly asks you to show reasoning.\n"
+    "- Do not use markdown, LaTeX, bold, headers, or tables. Do not wrap output "
+    "in code fences, except when the task is to write or fix code, in which "
+    "case output only the code.\n"
+    "- For classification, output only the label.\n"
+    "- For summaries, obey any length or format constraint stated in the task.\n"
+    "- For entity extraction, list each entity with its type, one per line.\n"
+    "- Keep the answer short and directly responsive to what is asked.\n"
+    "- Answer in English."
+)
+
 
 class Route(str, Enum):
     DETERMINISTIC = "deterministic"
@@ -102,7 +122,7 @@ class Router:
 
 def _to_messages(task: dict[str, Any]) -> list[dict]:
     """Adapt a task dict into chat messages. Minimal and task-agnostic."""
-    system = task.get("system")
+    system = task.get("system") or _DEFAULT_SYSTEM
     user = task.get("prompt") or task.get("text") or ""
     messages: list[dict] = []
     if system:
