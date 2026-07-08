@@ -83,7 +83,7 @@ class FireworksClient:
         return self._client
 
     def chat(self, messages: list[dict], *, temperature: float = 0.0,
-             max_tokens: int = 512) -> RemoteResult:
+             max_tokens: int = 1024) -> RemoteResult:
         client = self._ensure_client()
         resp = client.chat.completions.create(
             model=self._model,
