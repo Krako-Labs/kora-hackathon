@@ -33,9 +33,9 @@ _DEFAULT_SYSTEM = (
     "answer:\n"
     "- Give only the answer. No preamble, no explanation, and do not restate "
     "the question, unless the task explicitly asks you to show reasoning.\n"
-    "- Do not use markdown, LaTeX, bold, headers, or tables. Do not wrap output "
-    "in code fences, except when the task is to write or fix code, in which "
-    "case output only the code.\n"
+    "- Do not use markdown, LaTeX, bold, headers, or tables. Never wrap output "
+    "in code fences or backticks. When the task is to write or fix code, "
+    "output only the raw code itself, with no fences and no commentary.\n"
     "- For classification, output only the label.\n"
     "- For summaries, obey any length or format constraint stated in the task.\n"
     "- For entity extraction, list each entity with its type, one per line.\n"
@@ -78,12 +78,29 @@ class TaskResult:
 DecisionFn = Callable[[dict[str, Any]], RouteDecision]
 
 
+# Signals that a task is a coding task (debug or generation), based on the
+# published task categories. Pattern matching on the request only: answer-blind.
+_CODE_SIGNALS = (
+    "def ", "return ", "function", "code", "bug", "debug", "python",
+    "program", "script", "class ", "import ", "print(",
+)
+
+
+def _is_code_task(task: dict[str, Any]) -> bool:
+    text = str(task.get("prompt") or task.get("text") or "").lower()
+    return any(sig in text for sig in _CODE_SIGNALS)
+
+
 class Router:
     def __init__(self, decide: DecisionFn, local: LocalModel,
-                 remote: FireworksClient) -> None:
+                 remote: FireworksClient,
+                 remote_code: FireworksClient | None = None) -> None:
         self._decide = decide
         self._local = local
         self._remote = remote
+        # Optional code-specialized remote backend. When present, coding tasks
+        # are escalated to it instead of the general remote model.
+        self._remote_code = remote_code
 
     def run_task(self, task: dict[str, Any]) -> TaskResult:
         task_id = str(task.get("task_id", task.get("id", "")))
@@ -109,7 +126,10 @@ class Router:
             )
 
         # REMOTE
-        out = self._remote.chat(messages)
+        client = self._remote
+        if self._remote_code is not None and _is_code_task(task):
+            client = self._remote_code
+        out = client.chat(messages)
         return TaskResult(
             task_id=task_id,
             answer=out.text,

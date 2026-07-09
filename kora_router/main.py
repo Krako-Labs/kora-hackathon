@@ -98,7 +98,15 @@ def main() -> None:
     model = select_model(args.remote_model)
     local = LocalModel()
     remote = FireworksClient(model=model)
-    router = Router(decide=default_decision, local=local, remote=remote)
+    # Code-specialized backend: used only when the allow-list offers a code
+    # model distinct from the general one. Selection goes through the same
+    # allow-list matching, so nothing outside ALLOWED_MODELS can be chosen.
+    code_model = select_model("kimi-k2p7-code")
+    remote_code = None
+    if code_model and code_model != model:
+        remote_code = FireworksClient(model=code_model)
+    router = Router(decide=default_decision, local=local, remote=remote,
+                    remote_code=remote_code)
 
     results: list[dict[str, Any]] = []
     debug: list[dict[str, Any]] = []
@@ -139,7 +147,7 @@ def main() -> None:
                 "summary": {
                     "n_tasks": len(results),
                     "total_remote_tokens": total_remote,
-                    "remote_calls": remote.usage.calls,
+                    "remote_calls": remote.usage.calls + (remote_code.usage.calls if remote_code else 0),
                     "route_counts": route_counts,
                 },
                 "tasks": debug,
@@ -148,7 +156,8 @@ def main() -> None:
         )
 
     print(f"wrote {out_path}: {len(results)} tasks, "
-          f"{total_remote} remote tokens, {remote.usage.calls} remote calls, "
+          f"{total_remote} remote tokens, "
+          f"{remote.usage.calls + (remote_code.usage.calls if remote_code else 0)} remote calls, "
           f"routes={route_counts}")
 
 
