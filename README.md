@@ -1,74 +1,104 @@
-# KORA Router (AMD Developer Hackathon, Track 1)
+# Local LLM-based Voice Chatbot on Raspberry Pi
 
-A token-efficient routing agent. KORA decides, before any remote inference, how
-each unit of work should be handled: resolved by cheap deterministic or local
-computation, or escalated to a remote model only when nothing cheaper is
-confident. Remote token usage is a direct, measurable consequence of that
-routing.
+This is a demo of an LLM-based voice chatbot that runs locally on Raspbbery Pi.
+It is based on Nick Bild's [Local LLM Assistant](https://github.com/nickbild/local_llm_assistant) project, with some modifications and enhancements.
 
-## Status
+## Introduction
 
-This is the launch-day skeleton. The pipeline runs end to end with a placeholder
-routing policy that escalates every task to the remote model, so the container
-is runnable and testable before the task set is published. The real routing
-logic (deterministic rules first, a local small model for cheap-but-non-trivial
-work, remote only when needed) is added once the task I/O format and the allowed
-models are known.
+The pipeline is fairly simple:
 
-## Layout
+- ASR: [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+- LLM: TinyLlama 1.1B, wrapped using [llamafile](https://github.com/Mozilla-Ocho/llamafile)
+- TTS: Replaced `espeak` with [piper](https://github.com/rhasspy/piper), which has a much better voice quality.
 
-```
-kora_router/
-  main.py             entry point: load tasks, route each, write results
-  router.py           Route / RouteDecision / Router
-  local_model.py      local backend
-  fireworks_client.py remote backend (OpenAI-compatible Fireworks endpoint)
-Dockerfile            python:3.11-slim image, single runtime dependency
-requirements.txt      openai client (local backend deps added on launch day)
-```
+The control of the bot is also enhanced. Originally it was "push-to-trigger" mode with a fixed (3-second) length of recording.
+I changed it into a true "push-to-talk" mode, allowing me to record voice with arbitrary length.
 
-## Setup
-
-```
-pip install -r requirements.txt
-```
-
-Remote calls use the OpenAI-compatible Fireworks endpoint. Supply credentials
-and the model id at run time via environment variables:
-
-```
-export FIREWORKS_API_KEY=...
-export REMOTE_MODEL=accounts/fireworks/models/<model>
-```
+Everything run locally - once you've installed the dependencies, this program will work even when your device is offline.
 
 ## Usage
 
+### Hardware setup
+
+I used Raspberry Pi 4 (4GB RAM), but 3 might also work if it has enough RAM.
+
+For audio you need a USB microphone and a speaker.
+
+For the push button:
+- Connect the "button" wire to GPIO 8
+- Connect the "ground" wire to GPIO 6
+
+### Install Ubuntu server on Raspberry Pi
+
+I used the pre-installed ARM64 image:
+
+https://cdimage.ubuntu.com/releases/jammy/release/
+
+### Install system dependencies
+
+```bash
+sudo apt update
+sudo apt install ffmpeg espeak python3-pip python3-pyaudio cmake
+
+# Rust may also be needed
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+pip3 install openai openai-whisper RPi.GPIO pyaudio
 ```
-python -m kora_router.main --tasks tasks.json --out results.json
+
+### Install the program
+
+Clone the repo (and its submodules):
+```bash
+git clone https://github.com/zhoupingjay/llm_voice_chatbot_rpi.git
+cd llm_voice_chatbot_rpi/
+git submodule update --init
 ```
 
-Arguments:
-
-- `--tasks` path to the task JSON (required). Accepts either a list of tasks or
-  an object with a `tasks` key.
-- `--out` output path (default `results.json`).
-- `--remote-model` Fireworks model id. Falls back to the `REMOTE_MODEL`
-  environment variable.
-
-The output records, per task, the chosen route and the remote token count, plus
-a summary with total remote tokens, remote call count, and route counts.
-
-## Docker
-
+Download and build the dependencies:
 ```
-docker build -t kora-router .
-docker run --rm \
-  -e FIREWORKS_API_KEY=... \
-  -e REMOTE_MODEL=accounts/fireworks/models/<model> \
-  -v "$PWD":/data \
-  kora-router --tasks /data/tasks.json --out /data/results.json
+./install.sh
 ```
 
-## License
+The script will build and install these components under the `llm_voice_chatbot_rpi/` folder:
 
-MIT. See LICENSE.
+```
+llm_voice_chatbot_rpi
+├── llm             (The LLM)
+├── piper           (The TTS program and model)
+└── whisper.cpp     (The ASR program)
+    └── models      (The ASR model)
+```
+
+- LLM: [TinyLlama](https://huggingface.co/jartine/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile?download=true) installed under `llm` folder.
+- ASR: Binary in `whisper.cpp` folder, ASR model is downloaded under `whisper.cpp/models` folder.
+- TTS: [Piper for Raspberry Pi](https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_arm64.tar.gz) binary and the [TTS model](https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx?download=true), both installed under `piper` folder.
+
+### Launch the LLM in server mode
+
+```bash
+./llm/TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile --nobrowser
+```
+
+By default, it will launch a server listening on local port 8080.
+
+### Launch the voice chatbot
+
+```
+python3 chatbot.py
+```
+
+### Talk to the chatbot
+
+Push the button, speaker your request, and release the button.
+
+Be patient - it will take a while for the device to transcribe the request and generate the response.
+
+## Roadmap
+
+To be added.
+
+## Known Issues
+
+I've seen the bot to get stuck on some queries. Need more debugging to understand why...
