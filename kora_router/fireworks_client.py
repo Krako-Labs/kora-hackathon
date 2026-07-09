@@ -25,6 +25,20 @@ except ImportError:  # pragma: no cover - exercised only without the dep
 # Fallback only. The harness injects FIREWORKS_BASE_URL; that value wins.
 DEFAULT_BASE_URL = "https://api.fireworks.ai/inference/v1"
 
+# Fireworks model ids are full paths (accounts/fireworks/models/<name>). The
+# harness may inject either the full path or a bare name via ALLOWED_MODELS, so
+# normalize to the path form the API expects. A value that already contains a
+# slash (or is empty) is left untouched.
+_MODEL_PREFIX = "accounts/fireworks/models/"
+
+
+def _normalize_model(model: str) -> str:
+    m = (model or "").strip()
+    if not m or "/" in m:
+        return m
+    return _MODEL_PREFIX + m
+
+
 
 @dataclass
 class RemoteUsage:
@@ -58,7 +72,7 @@ class FireworksClient:
     def __init__(self, model: str, api_key: str | None = None,
                  base_url: str | None = None,
                  timeout: float | None = None) -> None:
-        self._model = model
+        self._model = _normalize_model(model)
         self._api_key = api_key or os.getenv("FIREWORKS_API_KEY")
         self._base_url = (base_url or os.getenv("FIREWORKS_BASE_URL")
                           or DEFAULT_BASE_URL)
