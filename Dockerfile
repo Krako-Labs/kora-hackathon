@@ -17,10 +17,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY kora_router ./kora_router
 
-# FIREWORKS_API_KEY and REMOTE_MODEL are supplied at run time via env vars.
-# Example:
-#   docker run --rm -e FIREWORKS_API_KEY=... -e REMOTE_MODEL=accounts/fireworks/models/... \
-#     -v "$PWD":/data kora-router \
-#     python -m kora_router.main --tasks /data/tasks.json --out /data/results.json
+# Default remote model preference. select_model only honors this when its
+# basename matches an entry in the harness-injected ALLOWED_MODELS allow-list,
+# so no model outside the allow-list can ever be selected. Keeping the
+# preference pinned makes local validation and scored runs use the same model.
+ENV REMOTE_MODEL=minimax-m3
+
+# FIREWORKS_API_KEY, FIREWORKS_BASE_URL, and ALLOWED_MODELS are supplied at
+# run time by the scoring harness. The container reads /input/tasks.json and
+# writes /output/results.json by default.
 
 ENTRYPOINT ["python", "-m", "kora_router.main"]

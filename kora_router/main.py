@@ -55,17 +55,28 @@ def load_tasks(path: Path) -> list[dict[str, Any]]:
     raise ValueError("unrecognized task file shape")
 
 
+def _model_basename(model_id: str) -> str:
+    """Last path segment: accounts/fireworks/models/minimax-m3 -> minimax-m3."""
+    return model_id.rsplit("/", 1)[-1].strip()
+
+
 def select_model(explicit: str) -> str:
     """Pick the remote model from ALLOWED_MODELS.
 
-    Uses the explicit override when it is allowed (or when no allow-list is
-    given); otherwise falls back to the first allowed model. The allow-list is
-    controlled by the harness, so no model id is hardcoded.
+    Prefers the explicit override when its basename matches an allowed entry,
+    returning the allow-list's own spelling so the harness format is
+    preserved. Falls back to the first allowed model otherwise. The allow-list
+    is controlled by the harness, so no model id outside it can be selected.
     """
     allowed = [m.strip() for m in os.getenv("ALLOWED_MODELS", "").split(",")
                if m.strip()]
-    if explicit and (not allowed or explicit in allowed):
+    if explicit and not allowed:
         return explicit
+    if explicit and allowed:
+        want = _model_basename(explicit)
+        for a in allowed:
+            if _model_basename(a) == want:
+                return a
     if allowed:
         return allowed[0]
     if explicit:
