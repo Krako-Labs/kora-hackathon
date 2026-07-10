@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,22 +29,41 @@ DEFAULT_TASKS = "/input/tasks.json"
 DEFAULT_OUT = "/output/results.json"
 
 
+# Numeric word problems (quantities embedded in prose, asked as "how many /
+# how much") are the one category where small local models reliably
+# miscalculate, and the deterministic evaluator only accepts pure expressions,
+# so these go straight to the remote model. Answer-blind: the signal is the
+# shape of the request, never a peeked answer.
+_MATH_QUERY = re.compile(
+    r"how\s+(many|much)|what\s+(number|fraction|percent(age)?)", re.IGNORECASE)
+
+
+def _is_numeric_word_problem(task: dict[str, Any]) -> bool:
+    text = str(task.get("prompt") or task.get("text") or "")
+    numbers = re.findall(r"\d+(?:\.\d+)?", text)
+    return len(numbers) >= 2 and bool(_MATH_QUERY.search(text))
+
+
 def default_decision(task: dict[str, Any]) -> RouteDecision:
-    """KORA front-door policy.
+    """KORA front-door policy: the cheapest correct path wins.
 
     Deterministic rules first: if a rule can resolve the task with a
-    provably-correct answer and no model, take it (zero tokens). Otherwise
-    escalate to the remote model. Local routing is intentionally not used until
-    a real local backend is served; routing to the placeholder backend would
-    emit empty answers and fail the accuracy gate.
+    provably-correct answer and no model, take it (zero tokens). Numeric word
+    problems escalate straight to remote (known local-model weak spot).
+    Everything else is answered by the local model at zero remote tokens; the
+    router's validation gate escalates any malformed local output to remote.
     """
     resolved = try_deterministic(task)
     if resolved is not None:
         answer, reason = resolved
         return RouteDecision(route=Route.DETERMINISTIC, reason=reason,
                              answer=answer)
-    return RouteDecision(route=Route.REMOTE,
-                         reason="escalate: no confident deterministic resolution")
+    if _is_numeric_word_problem(task):
+        return RouteDecision(
+            route=Route.REMOTE,
+            reason="escalate: numeric word problem (local unreliable)")
+    return RouteDecision(route=Route.LOCAL,
+                         reason="local-first: zero remote tokens")
 
 
 def load_tasks(path: Path) -> list[dict[str, Any]]:
@@ -120,16 +140,20 @@ def main() -> None:
             r = router.run_task(task)
             answer, route, reason, rtok = (
                 r.answer, r.route.value, r.reason, r.remote_tokens)
+            ptok, ctok = r.remote_prompt_tokens, r.remote_completion_tokens
         except Exception as exc:
             answer, route = "", "error"
             reason = f"error: {type(exc).__name__}: {exc}"
             rtok = 0
+            ptok = ctok = 0
         results.append({"task_id": task_id, "answer": answer})
         debug.append({
             "task_id": task_id,
             "route": route,
             "reason": reason,
             "remote_tokens": rtok,
+            "prompt_tokens": ptok,
+            "completion_tokens": ctok,
         })
 
     out_path = Path(args.out)

@@ -1,21 +1,26 @@
-"""Local small-model wrapper.
+"""Local small-model layer for the KORA routing agent.
 
-The routing layer sends "easy" work here instead of the remote model. Under
-the challenge scoring, tokens spent locally count as zero, so the local model
-should be sized to run inside the standardized scoring environment (a small
-open model such as Gemma is the intended fit).
+Runs a quantized instruct model on CPU via llama.cpp. Local inference is free
+under the challenge scoring, so every task the local model answers correctly
+costs zero remote tokens. The model loads lazily on first use and is reused
+across all tasks in a run, so a task set that never routes locally pays no
+load cost at all.
 
-The concrete backend is deliberately pluggable: the exact model and runtime
-(transformers, llama.cpp, a served endpoint, etc.) are fixed on launch day once
-the allowed models and environment constraints are published. Everything above
-this module only depends on the `LocalResult` shape and the `generate` method,
-so swapping the backend does not touch the router.
+The backend stays pluggable behind the `LocalBackend` protocol: everything
+above this module depends only on the `LocalResult` shape and the `generate`
+method, so swapping the runtime or the weights does not touch the router.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Protocol
+
+# Weights are baked into the image at build time; the path is overridable for
+# local testing outside the container.
+DEFAULT_MODEL_PATH = os.getenv(
+    "KORA_LOCAL_MODEL", "/app/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf")
 
 
 @dataclass
@@ -32,25 +37,47 @@ class LocalBackend(Protocol):
         ...
 
 
-class EchoBackend:
-    """Placeholder backend used until the real local model is wired in.
+class LlamaCppBackend:
+    """CPU inference over a GGUF model via llama-cpp-python."""
 
-    Returns an empty completion so the pipeline is runnable end-to-end before
-    launch day. Replaced by the actual small-model backend once the allowed
-    models are known.
-    """
+    def __init__(self, model_path: str | None = None, n_ctx: int = 2048,
+                 n_threads: int | None = None) -> None:
+        self._model_path = model_path or DEFAULT_MODEL_PATH
+        self._n_ctx = n_ctx
+        env_threads = os.getenv("KORA_LOCAL_THREADS", "")
+        self._n_threads = (int(env_threads) if env_threads.isdigit()
+                           else n_threads or os.cpu_count() or 4)
+        self._llm = None
+
+    def _ensure(self):
+        if self._llm is None:
+            from llama_cpp import Llama  # deferred: only needed on local route
+            self._llm = Llama(model_path=self._model_path, n_ctx=self._n_ctx,
+                              n_threads=self._n_threads, verbose=False)
+        return self._llm
 
     def generate(self, messages: list[dict], *, temperature: float = 0.0,
                  max_tokens: int = 512) -> LocalResult:
-        return LocalResult(text="", prompt_tokens=0, completion_tokens=0)
+        llm = self._ensure()
+        out = llm.create_chat_completion(
+            messages=messages, temperature=temperature, max_tokens=max_tokens)
+        usage = out.get("usage") or {}
+        return LocalResult(
+            text=(out["choices"][0]["message"]["content"] or "").strip(),
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+        )
 
 
 class LocalModel:
     def __init__(self, backend: LocalBackend | None = None) -> None:
-        self._backend = backend or EchoBackend()
+        # Lazy default so importing this module never requires llama_cpp;
+        # the backend is only constructed when a task actually routes local.
+        self._backend = backend
 
     def chat(self, messages: list[dict], *, temperature: float = 0.0,
              max_tokens: int = 512) -> LocalResult:
+        if self._backend is None:
+            self._backend = LlamaCppBackend()
         return self._backend.generate(
-            messages, temperature=temperature, max_tokens=max_tokens
-        )
+            messages, temperature=temperature, max_tokens=max_tokens)

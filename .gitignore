@@ -8,3 +8,4 @@ HANDOFF.md
 
 # Local-only dev utilities (key loading, remote validation). Not for scoring.
 scripts/
+models/

@@ -1,7 +1,2 @@
-# Core runtime dependencies for the KORA routing agent.
-# Remote calls go through the OpenAI-compatible Fireworks endpoint.
-openai>=1.40.0
-
-# Local small-model backend dependencies (e.g. transformers / a lightweight
-# runtime for Gemma) are added on launch day once the allowed models and the
-# scoring environment constraints are published.
+openai>=1.40
+llama-cpp-python>=0.3.5
