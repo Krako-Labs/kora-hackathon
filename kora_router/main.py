@@ -131,7 +131,7 @@ def main() -> None:
     # always finishes inside the scoring window. Deterministic answers stay
     # deterministic (they are instant).
     t0 = time.time()
-    budget = float(os.getenv("KORA_TIME_BUDGET", "180"))
+    budget = float(os.getenv("KORA_TIME_BUDGET", "520"))
 
     def decide_with_budget(task):
         d = default_decision(task)
