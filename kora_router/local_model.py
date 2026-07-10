@@ -15,12 +15,44 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 # Weights are baked into the image at build time; the path is overridable for
 # local testing outside the container.
 DEFAULT_MODEL_PATH = os.getenv(
     "KORA_LOCAL_MODEL", "/app/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf")
+
+def _available_cpus() -> int:
+    """CPUs actually available to this process, cgroup-aware.
+
+    os.cpu_count() reports the host's cores even inside a CPU-limited
+    container, which oversubscribes threads and thrashes. Prefer the cgroup
+    quota, then the scheduler affinity mask, then cpu_count.
+    """
+    try:  # cgroup v2
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        if quota != "max":
+            n = int(int(quota) / int(period))
+            if n >= 1:
+                return n
+    except (OSError, ValueError):
+        pass
+    try:  # cgroup v1
+        q = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+        p = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+        if q > 0:
+            n = int(q / p)
+            if n >= 1:
+                return n
+    except (OSError, ValueError):
+        pass
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass
+    return os.cpu_count() or 4
+
 
 
 @dataclass
@@ -46,7 +78,7 @@ class LlamaCppBackend:
         self._n_ctx = n_ctx
         env_threads = os.getenv("KORA_LOCAL_THREADS", "")
         self._n_threads = (int(env_threads) if env_threads.isdigit()
-                           else n_threads or os.cpu_count() or 4)
+                           else n_threads or _available_cpus())
         self._llm = None
 
     def _ensure(self):

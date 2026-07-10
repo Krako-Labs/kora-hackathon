@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +126,22 @@ def main() -> None:
     remote_code = None
     if code_model and code_model != model:
         remote_code = FireworksClient(model=code_model)
-    router = Router(decide=default_decision, local=local, remote=remote,
+    # Time-budget watchdog: past the soft budget, tasks that would run on the
+    # slower local path are escalated to remote instead, so the container
+    # always finishes inside the scoring window. Deterministic answers stay
+    # deterministic (they are instant).
+    t0 = time.time()
+    budget = float(os.getenv("KORA_TIME_BUDGET", "180"))
+
+    def decide_with_budget(task):
+        d = default_decision(task)
+        if d.route is Route.LOCAL and time.time() - t0 > budget:
+            return RouteDecision(
+                route=Route.REMOTE,
+                reason="time budget exceeded: local skipped")
+        return d
+
+    router = Router(decide=decide_with_budget, local=local, remote=remote,
                     remote_code=remote_code)
 
     results: list[dict[str, Any]] = []
