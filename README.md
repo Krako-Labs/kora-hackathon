@@ -1,104 +1,104 @@
-# Local LLM-based Voice Chatbot on Raspberry Pi
+# KORA: Token-Efficient Routing Agent
 
-This is a demo of an LLM-based voice chatbot that runs locally on Raspbbery Pi.
-It is based on Nick Bild's [Local LLM Assistant](https://github.com/nickbild/local_llm_assistant) project, with some modifications and enhancements.
+**AMD Developer Hackathon: ACT II, Track 1** · Krako Labs
 
-## Introduction
+Most routing tools decide which model should handle a task. KORA asks a different question first: **does this task need a remote call at all?**
 
-The pipeline is fairly simple:
+## How it works
 
-- ASR: [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
-- LLM: TinyLlama 1.1B, wrapped using [llamafile](https://github.com/Mozilla-Ocho/llamafile)
-- TTS: Replaced `espeak` with [piper](https://github.com/rhasspy/piper), which has a much better voice quality.
+Every task flows through three tiers. The cheapest correct path wins, and the remote model is the exception path, not the default.
 
-The control of the bot is also enhanced. Originally it was "push-to-trigger" mode with a fixed (3-second) length of recording.
-I changed it into a true "push-to-talk" mode, allowing me to record voice with arbitrary length.
+```
+Task
+ |
+ v
+[1] Deterministic rules      -> resolved: answer returned, 0 remote tokens
+ |   provably correct computation, no model at all
+ |   answer-blind, conservative, never guesses
+ v
+[2] Local model (CPU)        -> resolved: gate passed, 0 remote tokens
+ |   quantized instruct model shipped inside the container
+ |   an output validation gate checks every answer;
+ |   empty, runaway, or malformed output escalates instead of shipping
+ v
+[3] Remote model             -> counted: tokens score against the run
+     Fireworks endpoint, model chosen from ALLOWED_MODELS
+     reached only when nothing cheaper is trusted
+```
 
-Everything run locally - once you've installed the dependencies, this program will work even when your device is offline.
+Design principles:
 
-## Usage
+- **Accuracy-gate-first.** A deterministic rule fires only when its output is certain to be correct. The local tier is not trusted blindly either: every local answer passes a form-level validation gate, and anything suspicious escalates. The router never trades accuracy for tokens.
+- **Answer-blind routing.** Every routing decision is made from the request text alone, never from a peeked ground truth or a per-dataset lookup.
+- **No estimator overhead.** Unlike cascade approaches that run a quality-estimator model to decide, the front-door is a direct check. There is no extra model call in the hot path.
+- **Self-contained container.** The local model weights are baked into the image at build time. Nothing is downloaded at run time.
 
-### Hardware setup
+## Scoring-harness contract
 
-I used Raspberry Pi 4 (4GB RAM), but 3 might also work if it has enough RAM.
+The container runs with no arguments:
 
-For audio you need a USB microphone and a speaker.
+- reads tasks from `/input/tasks.json` as `[{"task_id": ..., "prompt": ...}, ...]`
+- writes answers to `/output/results.json` as `[{"task_id": ..., "answer": ...}, ...]`
+- reads `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, and `ALLOWED_MODELS` from the environment
+- routes all remote calls through `FIREWORKS_BASE_URL`, with the model chosen strictly from `ALLOWED_MODELS`
+- a single failing task never crashes the run: it is recorded with an empty answer and the container still writes a complete results file and exits 0
 
-For the push button:
-- Connect the "button" wire to GPIO 8
-- Connect the "ground" wire to GPIO 6
+## Repository layout
 
-### Install Ubuntu server on Raspberry Pi
+```
+kora_router/
+  main.py              entry point and front-door routing policy
+  router.py            three-tier routing core, validation gate, output hygiene
+  deterministic.py     safe arithmetic evaluator (rule tier)
+  local_model.py       llama.cpp CPU backend for the in-container model
+  fireworks_client.py  OpenAI-compatible client for the Fireworks endpoint
+eval/
+  run_eval.py          offline eval of the deterministic tier (no remote calls)
+  run_practice.py      end-to-end practice run through the full pipeline
+Dockerfile
+requirements.txt
+```
 
-I used the pre-installed ARM64 image:
+## Building the image
 
-https://cdimage.ubuntu.com/releases/jammy/release/
-
-### Install system dependencies
+The local model weights are not committed to the repository. Download the GGUF into `models/` before building:
 
 ```bash
-sudo apt update
-sudo apt install ffmpeg espeak python3-pip python3-pyaudio cmake
+mkdir -p models
+wget -O models/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 
-# Rust may also be needed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-
-pip3 install openai openai-whisper RPi.GPIO pyaudio
+docker build -t kora-router .
 ```
 
-### Install the program
+## Running locally
 
-Clone the repo (and its submodules):
-```bash
-git clone https://github.com/zhoupingjay/llm_voice_chatbot_rpi.git
-cd llm_voice_chatbot_rpi/
-git submodule update --init
-```
-
-Download and build the dependencies:
-```
-./install.sh
-```
-
-The script will build and install these components under the `llm_voice_chatbot_rpi/` folder:
-
-```
-llm_voice_chatbot_rpi
-├── llm             (The LLM)
-├── piper           (The TTS program and model)
-└── whisper.cpp     (The ASR program)
-    └── models      (The ASR model)
-```
-
-- LLM: [TinyLlama](https://huggingface.co/jartine/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile?download=true) installed under `llm` folder.
-- ASR: Binary in `whisper.cpp` folder, ASR model is downloaded under `whisper.cpp/models` folder.
-- TTS: [Piper for Raspberry Pi](https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_arm64.tar.gz) binary and the [TTS model](https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx?download=true), both installed under `piper` folder.
-
-### Launch the LLM in server mode
+Against a task file, with the harness contract:
 
 ```bash
-./llm/TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile --nobrowser
+docker run --rm \
+  -v /path/to/input:/input:ro \
+  -v /path/to/output:/output \
+  -e FIREWORKS_API_KEY=... \
+  ghcr.io/hkalbertkim/kora-router:latest
 ```
 
-By default, it will launch a server listening on local port 8080.
-
-### Launch the voice chatbot
+The run prints a routing summary to stdout, for example:
 
 ```
-python3 chatbot.py
+wrote /output/results.json: 8 tasks, 273 remote tokens, 1 remote calls,
+routes={'local': 7, 'remote': 1}
 ```
 
-### Talk to the chatbot
+An optional debug sidecar (`--debug-out` or `KORA_DEBUG_OUT`) records the route, reason, and per-task prompt/completion token split for every task.
 
-Push the button, speaker your request, and release the button.
+## Local validation before any submission
 
-Be patient - it will take a while for the device to transcribe the request and generate the response.
+- `eval/run_eval.py` checks the deterministic tier offline: deterministic precision, math coverage, and over-routing (deflecting a task that should escalate) with a target of zero.
+- `eval/run_practice.py` runs the published practice tasks through the full pipeline (deterministic, local with validation gate, remote escalation) and reports routes and remote token spend.
 
-## Roadmap
+No performance number is claimed until it is measured; leaderboard figures come from the AMD automated scoring run.
 
-To be added.
+## License
 
-## Known Issues
-
-I've seen the bot to get stuck on some queries. Need more debugging to understand why...
+See [LICENSE](LICENSE).
