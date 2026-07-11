@@ -60,6 +60,21 @@ def default_decision(task: dict[str, Any]) -> RouteDecision:
         return RouteDecision(route=Route.DETERMINISTIC, reason=reason,
                              answer=answer)
     if _is_numeric_word_problem(task):
+        text = str(task.get("prompt") or task.get("text") or "")
+        if text.count("?") >= 2:
+            # Multi-part numeric questions expect multiple answers; the
+            # single-number extraction path would ship only the last one,
+            # so these escalate instead. Answer-blind: question count only.
+            return RouteDecision(
+                route=Route.REMOTE,
+                reason="escalate: multi-part numeric question")
+        if os.environ.get("KORA_NUMERIC_LOCAL", "1") == "1":
+            # Local step-by-step path: measured 12/12 on the numeric probe
+            # versus 5/12 for direct answering. The router extracts only the
+            # final ANSWER line; extraction failure escalates to remote.
+            return RouteDecision(
+                route=Route.LOCAL, numeric_local=True,
+                reason="numeric word problem: local step-by-step")
         return RouteDecision(
             route=Route.REMOTE,
             reason="escalate: numeric word problem (local unreliable)")

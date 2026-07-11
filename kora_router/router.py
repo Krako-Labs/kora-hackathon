@@ -35,6 +35,16 @@ _LOCAL_SYSTEM = (
     "Answer in English."
 )
 
+# System prompt for numeric word problems on the local path. Direct-answer
+# prompting collapses small-model arithmetic (measured 5/12 on a 12-problem
+# probe), while brief step-by-step reasoning with a fixed final-answer line
+# measured 12/12 on the same probe. Only the extracted final number is ever
+# shipped as the answer; the reasoning text stays local.
+_LOCAL_NUMERIC_SYSTEM = (
+    "You answer math word problems. Think step by step briefly, then end "
+    "with a final line in exactly this form: ANSWER: <number>"
+)
+
 # System prompt for the remote model. Compact on purpose: it is re-sent on
 # every remote call and therefore billed on every remote call. General output
 # hygiene only, keyed to the published task categories, never per-dataset.
@@ -58,6 +68,9 @@ class RouteDecision:
     reason: str
     # For DETERMINISTIC, the answer is produced directly by the rule.
     answer: str | None = None
+    # For LOCAL, request the numeric step-by-step prompt and final-answer
+    # extraction instead of the generic direct-answer prompt.
+    numeric_local: bool = False
 
 
 @dataclass
@@ -120,6 +133,24 @@ def clean_answer(text: str) -> str:
     return _collapse_repeats(strip_fences(text))
 
 
+# --- numeric final-answer extraction ----------------------------------------
+
+_NUMERIC_ANSWER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def extract_numeric_answer(text: str) -> str:
+    """Pull the final number after the ANSWER: marker, or '' to escalate.
+
+    Conservative: without the marker we do not guess which number in the
+    reasoning is the final one; the empty result escalates to remote.
+    """
+    if not text or "ANSWER:" not in text:
+        return ""
+    tail = text.rsplit("ANSWER:", 1)[-1]
+    nums = _NUMERIC_ANSWER_RE.findall(tail.replace(",", ""))
+    return nums[-1] if nums else ""
+
+
 # Validation gate for local answers. Conservative and content-blind: it checks
 # form, not correctness. Anything that fails is escalated to remote instead of
 # being submitted, so a misbehaving local generation can lower token savings
@@ -167,6 +198,21 @@ class Router:
             )
 
         if decision.route is Route.LOCAL:
+            if decision.numeric_local:
+                out = self._local.chat(
+                    _messages(task, _LOCAL_NUMERIC_SYSTEM), max_tokens=256)
+                answer = extract_numeric_answer(out.text)
+                if answer:
+                    return TaskResult(
+                        task_id=task_id,
+                        answer=answer,
+                        route=Route.LOCAL,
+                        reason=decision.reason,
+                    )
+                # No trustworthy final answer: escalate, never guess.
+                return self._run_remote(
+                    task, task_id,
+                    reason="local escalation: numeric extraction failed")
             out = self._local.chat(_messages(task, _LOCAL_SYSTEM),
                                    max_tokens=256)
             answer = clean_answer(out.text)
