@@ -106,6 +106,10 @@ def select_model(explicit: str) -> str:
 
 
 def main() -> None:
+    # Wall clock starts before any parsing or model construction: the scoring
+    # harness measures the whole container run, so the budget must too.
+    t0 = time.time()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", default=DEFAULT_TASKS, help="path to task JSON")
     ap.add_argument("--out", default=DEFAULT_OUT, help="path to results JSON")
@@ -126,19 +130,21 @@ def main() -> None:
     remote_code = None
     if code_model and code_model != model:
         remote_code = FireworksClient(model=code_model)
-    # Time-budget watchdog: past the soft budget, tasks that would run on the
-    # slower local path are escalated to remote instead, so the container
-    # always finishes inside the scoring window. Deterministic answers stay
-    # deterministic (they are instant).
-    t0 = time.time()
-    budget = float(os.getenv("KORA_TIME_BUDGET", "520"))
+    # Time-budget watchdog: a local attempt is only started while the
+    # remaining budget can still absorb a worst-case attempt (the per-task
+    # timeout enforced inside the local backend). Past that point, tasks that
+    # would run on the slower local path are escalated to remote instead, so
+    # the container always finishes inside the scoring window. Deterministic
+    # answers stay deterministic (they are instant).
+    budget = float(os.getenv("KORA_TIME_BUDGET", "240"))
+    task_limit = float(os.getenv("KORA_LOCAL_TASK_TIMEOUT", "40"))
 
     def decide_with_budget(task):
         d = default_decision(task)
-        if d.route is Route.LOCAL and time.time() - t0 > budget:
+        if d.route is Route.LOCAL and time.time() - t0 > budget - task_limit:
             return RouteDecision(
                 route=Route.REMOTE,
-                reason="time budget exceeded: local skipped")
+                reason="time budget exhausted: local skipped")
         return d
 
     router = Router(decide=decide_with_budget, local=local, remote=remote,

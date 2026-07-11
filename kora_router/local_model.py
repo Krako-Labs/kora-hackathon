@@ -14,6 +14,7 @@ method, so swapping the runtime or the weights does not touch the router.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -91,13 +92,31 @@ class LlamaCppBackend:
     def generate(self, messages: list[dict], *, temperature: float = 0.0,
                  max_tokens: int = 512) -> LocalResult:
         llm = self._ensure()
-        out = llm.create_chat_completion(
-            messages=messages, temperature=temperature, max_tokens=max_tokens)
-        usage = out.get("usage") or {}
+        # Hard per-task wall-clock limit, checked per streamed token. On
+        # expiry we return an empty result: the router's validation gate
+        # treats empty output as a failure and escalates to remote, so no
+        # new code path is needed. This bounds the cost of a slow or
+        # runaway local generation on constrained scoring hardware.
+        limit = float(os.getenv("KORA_LOCAL_TASK_TIMEOUT", "40"))
+        start = time.monotonic()
+        pieces: list[str] = []
+        n_out = 0
+        stream = llm.create_chat_completion(
+            messages=messages, temperature=temperature,
+            max_tokens=max_tokens, stream=True)
+        for chunk in stream:
+            if time.monotonic() - start > limit:
+                return LocalResult(text="", prompt_tokens=0,
+                                   completion_tokens=n_out)
+            delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                pieces.append(piece)
+                n_out += 1
         return LocalResult(
-            text=(out["choices"][0]["message"]["content"] or "").strip(),
-            prompt_tokens=int(usage.get("prompt_tokens") or 0),
-            completion_tokens=int(usage.get("completion_tokens") or 0),
+            text="".join(pieces).strip(),
+            prompt_tokens=0,
+            completion_tokens=n_out,
         )
 
 
